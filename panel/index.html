@@ -80,6 +80,8 @@
   td:first-child{text-align:left}
   td.bold{color:var(--text);font-weight:500}
   td.accent{color:var(--lima)} td.warn{color:var(--alerta)}
+  td.ctr{color:var(--lima);font-weight:600;font-size:14.5px}
+  .camp{display:block;font-size:11px;color:var(--muted);font-weight:300;margin-top:3px;letter-spacing:.01em}
   .scroll{overflow-x:auto}
   .vacio{font-size:13px;color:var(--muted);padding:14px 16px;background:#141414;border-radius:8px;border:1px dashed #2A2A2A}
   .foot{margin-top:18px;font-size:11.5px;color:var(--muted);line-height:1.7}
@@ -246,23 +248,27 @@ function construirPeriodo(maxDias){
   function dentro(d){ var n = diasAtras(d); return n>=0 && n<maxDias; }
 
   // GOOGLE (costo en ARS -> USD)
-  var gG = 0, gImp = 0, gClk = 0;
+  var gG = 0, gImp = 0, gClk = 0, gCamps = [];
   RAW.google.forEach(function(r){
     var d = toDate(getCampo(r,["Fecha","date"]));
     if(!d || !dentro(d)) return;
     gG   += num(getCampo(r,["Costo","cost","spend"]))/TIPO_CAMBIO;
     gImp += num(getCampo(r,["Impresiones","impressions"]));
     gClk += num(getCampo(r,["Clics","clicks"]));
+    var gc = (getCampo(r,["Campaña","Campana","campaign"])||"")+"";
+    if(gc && gCamps.indexOf(gc)===-1) gCamps.push(gc);
   });
 
   // META (ya en USD)
-  var mG = 0, mImp = 0, mClk = 0;
+  var mG = 0, mImp = 0, mClk = 0, mCamps = [];
   RAW.meta.forEach(function(r){
     var d = toDate(getCampo(r,["date","Fecha"]));
     if(!d || !dentro(d)) return;
     mG   += num(getCampo(r,["spend","Amount Spent","Costo"]));
     mImp += num(getCampo(r,["impressions","Impresiones"]));
     mClk += num(getCampo(r,["clicks","Clics"]));
+    var mc = (getCampo(r,["campaign","Campaña","Campana"])||"")+"";
+    if(mc && mCamps.indexOf(mc)===-1) mCamps.push(mc);
   });
 
   // VENTAS (Hotmart, USD) — no atribuibles a medio
@@ -275,8 +281,8 @@ function construirPeriodo(maxDias){
   });
 
   var medios = [
-    { medio:"Meta Ads",   gasto:mG, impresiones:mImp, clics:mClk, ventas:0, ingresos:0 },
-    { medio:"Google Ads", gasto:gG, impresiones:gImp, clics:gClk, ventas:0, ingresos:0 },
+    { medio:"Meta Ads",   campanias:mCamps, gasto:mG, impresiones:mImp, clics:mClk, ventas:0, ingresos:0 },
+    { medio:"Google Ads", campanias:gCamps, gasto:gG, impresiones:gImp, clics:gClk, ventas:0, ingresos:0 },
   ];
 
   // Serie temporal: agrupar por día (rango corto) o por semana (rango largo)
@@ -350,9 +356,12 @@ function calc(P){
   var roasNeto      = gastoTotal>0 ? (ingresosPago*NETO)/gastoTotal : Infinity;
   var aov           = ventasTotal>0 ? ingresosTotal/ventasTotal : 0;
   var convPago      = clicsTotal>0 ? (ventasPago/clicsTotal)*100 : 0;
+  // CTR total: solo cuenta clics de medios que SÍ reportan impresiones (evita inflar el %)
+  var clicsConImpr  = P.medios.reduce(function(a,x){return a + (x.impresiones>0 ? x.clics : 0);},0);
+  var ctrTotal      = imprTotal>0 ? (clicsConImpr/imprTotal)*100 : 0;
   var medios = P.medios.map(function(x){
     return {
-      medio:x.medio, gasto:x.gasto, impresiones:x.impresiones, clics:x.clics, ventas:x.ventas, ingresos:x.ingresos,
+      medio:x.medio, campanias:x.campanias||[], gasto:x.gasto, impresiones:x.impresiones, clics:x.clics, ventas:x.ventas, ingresos:x.ingresos,
       ctr: x.impresiones>0 ? (x.clics/x.impresiones)*100 : 0,
       cpc: x.clics>0 ? x.gasto/x.clics : 0,
       cpa: x.ventas>0 ? x.gasto/x.ventas : Infinity,
@@ -363,7 +372,7 @@ function calc(P){
   });
   return { P:P, gastoTotal:gastoTotal, ventasPago:ventasPago, ingresosPago:ingresosPago,
     imprTotal:imprTotal, clicsTotal:clicsTotal, ingresosTotal:ingresosTotal, ventasTotal:ventasTotal,
-    roasBlended:roasBlended, roasPago:roasPago, roasNeto:roasNeto, aov:aov, convPago:convPago, medios:medios };
+    roasBlended:roasBlended, roasPago:roasPago, roasNeto:roasNeto, aov:aov, convPago:convPago, ctrTotal:ctrTotal, medios:medios };
 }
 
 
@@ -581,10 +590,59 @@ function fuentesHTML(m){
 
 function td(val,cls){ return '<td class="'+(cls||"")+'">'+val+'</td>'; }
 function rowHTML(x){
-  return '<tr>'+ td(x.medio,"bold")+ td(fmtUSD(x.gasto))+ td(fmtNum(x.impresiones))+ td(fmtNum(x.clics))+
-    td(fmtPct(x.ctr))+ td(fmtUSD(x.cpc))+ td(fmtNum(x.ventas))+ td(fmtPct(x.conv))+
+  var medioCell = x.medio + (x.campanias && x.campanias.length ? '<span class="camp">'+x.campanias.join(" &middot; ")+'</span>' : '');
+  return '<tr>'+ td(medioCell,"bold")+ td(fmtUSD(x.gasto))+ td(fmtNum(x.impresiones))+ td(fmtNum(x.clics))+
+    td(x.impresiones>0 ? fmtPct(x.ctr) : "\u2014", x.impresiones>0 ? "ctr" : "")+ td(fmtUSD(x.cpc))+ td(fmtNum(x.ventas))+ td(fmtPct(x.conv))+
     td(isFinite(x.cpa)?fmtUSD(x.cpa):"\u2014")+
     td(fmtX(x.roas), x.gasto>0&&x.ingresos===0 ? "warn" : (isFinite(x.roas)&&x.roas>=1?"accent":""))+ '</tr>';
+}
+
+/* ---------- CTR destacado por medio ---------- */
+function ctrHTML(m){
+  function cell(lbl,val,nota,cls){
+    return '<div class="cell"><div class="lbl">'+lbl+'</div><div class="val '+(cls||"")+'">'+val+'</div><div class="nota">'+nota+'</div></div>';
+  }
+  var cells = m.medios.map(function(x){
+    var nota = fmtNum(x.clics)+' clics / '+fmtNum(x.impresiones)+' impr.';
+    if(x.campanias && x.campanias.length) nota = x.campanias.join(" &middot; ") + ' &middot; ' + nota;
+    if(x.impresiones===0) nota += ' &middot; sin impresiones en la planilla';
+    return cell(x.medio, x.impresiones>0 ? fmtPct(x.ctr) : "\u2014", nota, x.impresiones>0 ? "accent" : "");
+  }).join("");
+  cells += cell("CTR total pago", m.imprTotal>0 ? fmtPct(m.ctrTotal) : "\u2014", fmtNum(m.clicsTotal)+' clics / '+fmtNum(m.imprTotal)+' impr.', "");
+  return cells;
+}
+
+/* ---------- Gasto diario de los \u00faltimos 7 d\u00edas (tabla) ---------- */
+function gastoDiaPorMedio(n){
+  var g = { "Meta Ads":0, "Google Ads":0 };
+  RAW.meta.forEach(function(r){
+    var d = toDate(getCampo(r,["date","Fecha"]));
+    if(d && diasAtras(d)===n) g["Meta Ads"] += num(getCampo(r,["spend","Amount Spent"]));
+  });
+  RAW.google.forEach(function(r){
+    var d = toDate(getCampo(r,["Fecha","date"]));
+    if(d && diasAtras(d)===n) g["Google Ads"] += num(getCampo(r,["Costo","cost","spend"]))/TIPO_CAMBIO;
+  });
+  return g;
+}
+function tablaDiaria7HTML(){
+  var nombres = ["Meta Ads","Google Ads"];
+  var dl = ["Dom","Lun","Mar","Mi\u00e9","Jue","Vie","S\u00e1b"];
+  function money(v){ return "$"+v.toFixed(2); }
+  var tot = {"Meta Ads":0,"Google Ads":0}, totGral = 0, filas = "";
+  for(var n=6; n>=0; n--){
+    var fecha = new Date(); fecha.setDate(fecha.getDate()-n);
+    var g = gastoDiaPorMedio(n), suma = 0, celdas = "";
+    nombres.forEach(function(k){ tot[k]+=g[k]; suma+=g[k]; celdas+=td(money(g[k])); });
+    totGral += suma;
+    filas += '<tr>'+td(dl[fecha.getDay()]+" "+fecha.getDate()+"/"+(fecha.getMonth()+1),"bold")+celdas+td(money(suma),"bold")+'</tr>';
+  }
+  var filaTot = '<tr>'+td("Total 7 d\u00edas","bold")+
+    nombres.map(function(k){return td(money(tot[k]),"bold");}).join("")+
+    td(money(totGral),"bold accent")+'</tr>';
+  return '<div class="scroll" style="margin-top:16px"><table style="min-width:480px"><thead><tr><th>D\u00eda</th>'+
+    nombres.map(function(k){return '<th>'+k+'</th>';}).join("")+'<th>Total</th></tr></thead><tbody>'+
+    filas+filaTot+'</tbody></table></div>';
 }
 
 var PERIODO_DIAS = { "Ultimos 7 dias":7, "Ultimos 30 dias":30, "Ultimos 90 dias":90 };
@@ -628,14 +686,19 @@ function render(nombre){
     '<div class="sec" style="margin-top:36px">Ventas por pa\u00EDs</div>'+
     '<div style="margin-top:16px">'+tablaAgrupada(ventasAgrupadas(PERIODO_DIAS[nombre]).porPais,'pais')+'</div>';
 
-  var cols=["Medio","Gasto","Impr.","Clics","CTR","CPC","Ventas","Conv.","CPA","ROAS"];
+  var cols=["Medio / campa\u00f1a","Gasto","Impr.","Clics","CTR","CPC","Ventas","Conv.","CPA","ROAS"];
   document.getElementById("tab-medios").innerHTML =
-    '<div class="scroll"><table><thead><tr>'+cols.map(function(c){return '<th>'+c+'</th>';}).join("")+'</tr></thead><tbody>'+
+    '<div class="sec">CTR por medio</div>'+
+    '<div class="eco">'+ctrHTML(m)+'</div>'+
+    '<div class="sec" style="margin-top:36px">Detalle por medio</div>'+
+    '<div class="scroll" style="margin-top:16px"><table><thead><tr>'+cols.map(function(c){return '<th>'+c+'</th>';}).join("")+'</tr></thead><tbody>'+
     m.medios.map(rowHTML).join("")+
     '<tr>'+ td("Total pago","bold")+ td(fmtUSD(m.gastoTotal),"bold")+ td(fmtNum(m.imprTotal))+ td(fmtNum(m.clicsTotal))+
-      td("\u2014")+ td("\u2014")+ td(fmtNum(m.ventasPago),"bold")+ td(fmtPct(m.convPago))+ td("\u2014")+
+      td(m.imprTotal>0 ? fmtPct(m.ctrTotal) : "\u2014", m.imprTotal>0 ? "ctr" : "")+ td("\u2014")+ td(fmtNum(m.ventasPago),"bold")+ td(fmtPct(m.convPago))+ td("\u2014")+
       td(fmtX(m.roasPago), pagoSinRetorno?"bold warn":("bold"+(m.roasPago>=1?" accent":"")))+'</tr>'+
-    '</tbody></table></div>';
+    '</tbody></table></div>'+
+    '<div class="sec" style="margin-top:36px">Gasto diario &middot; \u00faltimos 7 d\u00edas</div>'+
+    tablaDiaria7HTML();
 }
 
 /* ---------- Init: leer las 3 solapas y arrancar ---------- */
